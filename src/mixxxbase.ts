@@ -13,7 +13,12 @@ if (typeof engine !== 'undefined') {
         setValue: engine.setValue,
         sendShortMsg: midi.sendShortMsg,
         makeConnection: engine.makeConnection,
+        trigger: engine.trigger,
     }
+}
+
+export function injectMixx(inj: Mixxx) {
+    mx = inj
 }
 
 
@@ -24,29 +29,36 @@ interface ConnectionListener {
 export class Control {
     private listeners: ConnectionListener[] = []
     private lastVal: number
-    private conn?: number
+    private conn?: any
     constructor(public readonly group: DeckGroup, public readonly key: DeckControlKey) { }
     public addListener(l: ConnectionListener) {
         if (!this.conn) {
             this.conn = mx.makeConnection(this.group, this.key, val => {
+                this.lastVal = val
                 for (const l of this.listeners) {
                     l.onControlChange(val)
                 }
-
             })
         }
-        // TODO: establish the connection at some point
+        mx.trigger(this.group, this.key)
         this.listeners.push(l)
         l.onControlChange(this.lastVal)
+    }
+    public getValue(): number {
+        return mx.getValue(this.group, this.key)
+    }
+    public setValue(v: number): void {
+        return mx.setValue(this.group, this.key, v)
     }
 }
 
 export class Deck {
     constructor(public readonly group: DeckGroup) { }
 
-    public getf(key: DeckControlKey): number {
-        return mx.getValue(this.group, key)
+    public control(key: DeckControlKey): Control {
+        return new Control(this.group, key)
     }
+
 }
 
 export interface NoteSpec {
@@ -94,6 +106,14 @@ export class MidiHandlerMap {
                 h.onOff()
             }
         }
+    }
+    public testonlyInvoke(name: string, v: number) {
+        const h = this.handlers[name]
+        if (!h) {
+            console.log(`no handler ${name}, but got ${Object.keys(this.handlers)}`)
+            return
+        }
+        h(v)
     }
 }
 enum OPCH {

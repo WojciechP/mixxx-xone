@@ -3,6 +3,7 @@ interface Engine {
     getValue<Key extends keyof GroupControlMap>(group: GroupControlMap[Key], key: Key): number
     setValue<Key extends keyof GroupControlMap>(group: GroupControlMap[Key], key: Key, v: number): void
     makeConnection<Key extends keyof GroupControlMap>(group: GroupControlMap[Key], key: Key, h: (val: number) => void): number
+    trigger<Key extends keyof GroupControlMap>(group: GroupControlMap[Key], key: Key): void
 }
 declare const engine: Engine
 declare function print(thing: any): void
