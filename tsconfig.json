@@ -1,0 +1,17 @@
+{
+    "compilerOptions": {
+        "noImplicitAny": true,
+        "removeComments": true,
+        "preserveConstEnums": true,
+        "esModuleInterop": true,
+        "outDir": "out",
+        "lib": [
+            "ES5"
+        ]
+    },
+    "include": [
+        "types/*.d.ts",
+        "src/mixxxbase.ts",
+        "src/xone.ts",
+    ],
+}
