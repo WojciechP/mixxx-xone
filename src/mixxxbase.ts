@@ -81,9 +81,18 @@ export class NoteHandler {
         mx.sendShortMsg(0x80 + this.note.chan, this.note.note, 1)
     }
 }
+export interface MidiSpec {
+    key: string
+    status: number
+    midino: number
+}
 
 export class MidiHandlerMap {
     private handlers: { [name: string]: (val: number) => void } = {}
+    private handlerXMLData: MidiSpec[] = []
+    public getXMLData(): Readonly<MidiSpec[]> {
+        return this.handlerXMLData
+    }
 
     public addNote(name: string, ns: NoteSpec) {
         const h = new NoteHandler(name, ns)
@@ -96,6 +105,11 @@ export class MidiHandlerMap {
         if (this.handlers[name]) {
             throw `handler ${name} already registered`
         }
+        this.handlerXMLData.push({
+            key: name + '_on',
+            status: h.note.chan + 0x90,
+            midino: h.note.note,
+        })
         this.handlers[name + '_on'] = (val) => {
             if (h.onOn) {
                 h.onOn()
@@ -106,6 +120,11 @@ export class MidiHandlerMap {
                 h.onOff()
             }
         }
+        this.handlerXMLData.push({
+            key: name + '_off',
+            status: h.note.chan + 0x80,
+            midino: h.note.note,
+        })
     }
     public testonlyInvoke(name: string, v: number) {
         const h = this.handlers[name]

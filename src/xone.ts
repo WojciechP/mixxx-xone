@@ -94,7 +94,7 @@ export class Button {
 
 export function registerMIDI(mhm: MidiHandlerMap) {
     const grid = mapHash(letters, (name, note) => {
-        const b = new Button(mhm, name, { chan: 15, note: note })
+        const b = new Button(mhm, name, { chan: 14, note: note })
         return b
     })
     return {

@@ -1,4 +1,5 @@
-import { Mixxx } from "../src/mixxxbase"
+import { MidiHandlerMap, MidiSpec, Mixxx } from "../src/mixxxbase"
+import * as xml2js from 'xml2js'
 
 interface LocalConn {
     group: string
@@ -42,7 +43,41 @@ export class FakeMixxx implements Mixxx {
     sendShortMsg(ch: number, ctrl: number, val: number): void {
         throw new Error("Method not implemented.")
     }
+    private xmlControls: MidiSpec[]
+    private mhm: MidiHandlerMap // for dispatching MIDI signals
 
+    public async injectXML(xml: string, fpref: string, mhm: MidiHandlerMap) {
+        this.mhm = mhm
+        const parser = new xml2js.Parser()
+        const parsed = await parser.parseStringPromise(xml)
+        const controls = parsed['MixxxControllerPreset']['controller'][0]['controls'][0]['control']
+        this.xmlControls = controls.map((xml: any) => {
+            const c = xml
+            return {
+                status: parseInt(c.status),
+                midino: parseInt(c.midino),
+                key: c.key,
+            }
+        })
 
+    }
+    public dispatchMidi(status: number, midino: number, val: number): void {
+        let n = 0
+        this.xmlControls.forEach((ctrl) => {
+            if (ctrl['status'] === status && ctrl['midino'] === midino) {
+                n++
+                const fname = ctrl.key
+                const [pref, suf] = String(fname).split('.')
+                if (pref != 'handlers') {
+                    throw `bad key ${fname}`
+                }
+                const f: (v: number) => void = (this.mhm as any).handlers[suf]
+                f(val)
+            }
+        })
+        if (n === 0) {
+            throw `no handler for 0x${status.toString(16)}/0x${midino.toString(16)}`
+        }
+    }
 
 }
