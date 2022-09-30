@@ -1,19 +1,25 @@
 
+interface Connection {
+    trigger(): void
+}
+
 interface Engine {
     getValue<Key extends keyof GroupControlMap>(group: GroupControlMap[Key], key: Key): number
     setValue<Key extends keyof GroupControlMap>(group: GroupControlMap[Key], key: Key, v: number): void
-    makeConnection<Key extends keyof GroupControlMap>(group: GroupControlMap[Key], key: Key, h: (val: number) => void): number
+    makeConnection<Key extends keyof GroupControlMap>(group: GroupControlMap[Key], key: Key, h: (val: number, group: GroupControlMap[Key], key: Key) => void): Connection
     trigger<Key extends keyof GroupControlMap>(group: GroupControlMap[Key], key: Key): void
 }
 declare const engine: Engine
-declare function print(thing: any): void
+declare var print: (thing: {}) => void
 
 type DeckGroup = '[Channel1]' | '[Channel2]' | '[Channel3]' | '[Channel4]'
 
 
 type GroupControlMap = {
     [ctrl in DeckControlKey]: DeckGroup
-}
+} & {
+        [ctrl in PlaylistKey]: '[Playlist]'
+    }
 
 
 interface MIDI {
@@ -21,6 +27,8 @@ interface MIDI {
 }
 declare const midi: MIDI
 
+
+type PlaylistKey = 'AutoDjAddTop' | 'AutoDjAddBottom'
 
 type DeckControlKey =
     'back'

@@ -4,11 +4,10 @@ export interface MappingDesc {
     name: string
     description: string
     controllerID: string
-    jsfile: string
     functionprefix: string
 }
 
-export function genxml(md: MappingDesc, mhm: MidiHandlerMap): string {
+export function genxml(md: MappingDesc, mhm: MidiHandlerMap, jsfile: string): string {
     const controls = mhm.getXMLData().map(({ key, status, midino }) => `<control>
     <key>handlers.${key}</key>
     <status>${status}</status>
@@ -27,7 +26,7 @@ export function genxml(md: MappingDesc, mhm: MidiHandlerMap): string {
         ${info}
         <controller id="${md.controllerID}">
         <scriptfiles>
-            <file filename="${md.jsfile}" functionprefix="${md.functionprefix}" />
+            <file filename="${jsfile}" functionprefix="${md.functionprefix}" />
         </scriptfiles>
         <controls>
         ${controls.join('\n')}
