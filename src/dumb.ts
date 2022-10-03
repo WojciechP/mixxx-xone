@@ -89,7 +89,8 @@ var K24D: { [k: string]: {} } = {};
             layer: 'deck' | 'overview'
             currentGroup: DeckGroup
             deck: Deck
-            dispatch: { [k: string]: (ch: number, ctrl: number, val: number) => void }
+            dispatch: { [k: string]: (ch: number, ctrl: number, val: number) => void },
+            parity: 0 | 1
         }
 
 
@@ -172,6 +173,7 @@ var K24D: { [k: string]: {} } = {};
             currentGroup: '[Channel1]',
             deck: new Deck('[Channel1]'),
             dispatch: {},
+            parity: 0,
         }
         const chanOffset = 14
         const decks: DeckGroup[] = [
@@ -647,8 +649,14 @@ var K24D: { [k: string]: {} } = {};
                         state.deck = d
                         layerDeck.activate()
                     },
-                    // No connection: LEDs here are only changed on layer change
-                    color: () => state.layer === 'overview' || state.currentGroup === group ? Color.AMBER : Color.OFF,
+                    timer: true,
+                    color: () => {
+                        let on = state.layer === 'overview'
+                        if (state.currentGroup === group && state.parity) {
+                            on = true
+                        }
+                        return on ? Color.AMBER : Color.OFF
+                    },
                 })
 
                 layer.pot({
@@ -657,16 +665,6 @@ var K24D: { [k: string]: {} } = {};
                 })
             })
             const lastEqCol = midimap.columns[3]
-            layer.rotary({
-                midi: lastEqCol[1],
-                onTurn: v => {
-                    headphones.setFader(v)
-                    print(`headGain turn: ${v}`)
-                },
-
-                onDown: () => headphones.flip(),
-                color: () => Color.OFF,
-            })
             layer.rotary({
                 midi: lastEqCol[3],
                 onTurn: () => { }, // FX? Heaphone gain?
@@ -695,6 +693,14 @@ var K24D: { [k: string]: {} } = {};
                     engine.setValue('[PreviewDeck1]', 'eject', 1)
                 },
                 color: () => Color.OFF,
+            })
+
+            layer.pot({
+                midi: midimap.faders[3],
+                onTurn: v => {
+                    headphones.setFader(v)
+                    print(`headGain turn: ${v}`)
+                },
             })
         } // mapEQSection
 
@@ -905,6 +911,7 @@ var K24D: { [k: string]: {} } = {};
         })
 
         engine.beginTimer(200, () => {
+            state.parity = state.parity ? 0 : 1
             rateZeroer.tick()
             layerOverview.tickers.forEach(t => t())
             layerDeck.tickers.forEach(t => t())
