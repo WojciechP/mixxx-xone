@@ -8,17 +8,25 @@ interface Engine {
     setValue<Key extends keyof GroupControlMap>(group: GroupControlMap[Key], key: Key, v: number): void
     makeConnection<Key extends keyof GroupControlMap>(group: GroupControlMap[Key], key: Key, h: (val: number, group: GroupControlMap[Key], key: Key) => void): Connection
     trigger<Key extends keyof GroupControlMap>(group: GroupControlMap[Key], key: Key): void
+    beginTimer(ms: number, h: () => void, oneShot?: boolean): void
 }
 declare const engine: Engine
 declare var print: (thing: {}) => void
 
-type DeckGroup = '[Channel1]' | '[Channel2]' | '[Channel3]' | '[Channel4]'
+type DeckGroup = '[Channel1]' | '[Channel2]' | '[Channel3]' | '[Channel4]' | '[PreviewDeck1]'
+type EqGroup = `[EqualizerRack1_${DeckGroup}_Effect1]`
 
 
 type GroupControlMap = {
     [ctrl in DeckControlKey]: DeckGroup
 } & {
         [ctrl in PlaylistKey]: '[Playlist]'
+    } & {
+        [ctrl in AutoDJKey]: '[AutoDJ]'
+    } & {
+        [ctrl in MasterKey]: '[Master]'
+    } & {
+        [ctrl in EqControlKey]: EqGroup
     }
 
 
@@ -28,7 +36,10 @@ interface MIDI {
 declare const midi: MIDI
 
 
-type PlaylistKey = 'AutoDjAddTop' | 'AutoDjAddBottom'
+type PlaylistKey = 'AutoDjAddTop' | 'AutoDjAddBottom' | 'SelectNextPlaylist' | 'SelectPrevPlaylist' | 'ToggleSelectedSidebarItem' | 'SelectTrackKnob'
+type AutoDJKey = 'enabled' | 'fade_now'
+type MasterKey = 'crossfader' | 'headGain'
+type EqControlKey = 'parameter1' | 'parameter2' | 'parameter3'
 
 type DeckControlKey =
     'back'

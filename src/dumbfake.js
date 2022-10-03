@@ -4,6 +4,7 @@ function newFake() {
         _commands: [],
         _values: {},
         _connections: {},
+        _timers: [],
     }
     engine.sendShortMsg = (a, b, c) => engine._midiHistory.push([a, b, c])
     engine.getValue = (group, key) => {
@@ -75,6 +76,16 @@ function newFake() {
         })
         engine._commands = []
     }
+    engine.beginTimer = (ms, f, oneShot) => {
+        if (oneShot) {
+            throw new Error(`cannot do one-shots`)
+        }
+        engine._timers.push(new Timer(f))
+    }
+
+    engine.triggerTimers = () => {
+        engine._timers.forEach(t => t.func())
+    }
 
 
     const deckGroups = ['[Channel1]', '[Channel2]', '[Channel3]', '[Channel4]']
@@ -112,6 +123,12 @@ class Connection {
     }
     disconnect() {
         this.handler = () => { }
+    }
+}
+
+class Timer {
+    constructor(func) {
+        this.func = func
     }
 }
 

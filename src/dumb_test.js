@@ -50,6 +50,14 @@ const doUp = (note) => {
     }
     h(1)
 }
+const doPot = (midino, v) => {
+    const mp = midiKeyCC(midino)
+    const h = k2.state.dispatch[mp]
+    if (!h) {
+        throw new Error(`no MIDI handler for CC ${mp}`)
+    }
+    h(14, midino, v)
+}
 
 const prepareTrack = (engine, group) => {
     engine._values[`${group}__hotcue_1_position`] = -1
@@ -57,6 +65,7 @@ const prepareTrack = (engine, group) => {
     engine._values[`${group}__hotcue_3_position`] = 10000
     engine._values[`${group}__hotcue_4_position`] = -1
     engine._values[`${group}__play`] = 0
+    engine._values[`${group}__track_loaded`] = 1
     engine._values[`${group}__track_samplerate`] = 1000
     engine._values[`${group}__track_samples`] = 15000
     engine._values[`${group}__file_bpm`] = 60
@@ -74,6 +83,19 @@ const gridRows = [
 ]
 
 const chans3 = ['[Channel3]', '[Channel1]', '[Channel2]']
+
+describe('common section', () => {
+    it('selects songs', () => {
+        doPot(0x15, 1)
+        doPot(0x15, 127)
+        doPot(0x14, 127)
+        expect(fm._commands).toEqual([
+            ['[Playlist]', 'SelectTrackKnob', 1],
+            ['[Playlist]', 'SelectTrackKnob', -1],
+            ['[Playlist]', 'SelectPrevPlaylist', 1],
+        ])
+    })
+})
 
 describe('deck mapping', () => {
     it('toggles play', () => {
@@ -106,6 +128,15 @@ describe('deck mapping', () => {
         expect(gridRows[1].map(fm.colorOf)).toEqual(
             ['off', 'off', 'red', 'red']
         )
+    })
+    it('sets eq', () => {
+        doPot(0x0D, 64)
+        doPot(0x0D, 0)
+        expect(fm._commands).toEqual([
+            ['[Channel1]', 'filterLow', 1.0],
+            ['[Channel1]', 'filterLow', 0.0],
+        ])
+
     })
 
     it('adjusts tempo', () => {
@@ -184,5 +215,38 @@ describe('overview mapping', () => {
         expect(eqBot.map(fm.colorOf)).toEqual(['amber', 'amber', 'amber', 'amber'])
         expect(gridRows[0].map(fm.colorOf)).toEqual(['off', 'off', 'off', 'off'])
     })
+})
 
+describe('rate zeroer', () => {
+    beforeEach(() => {
+        prepareTrack(fm, '[Channel1]')
+        prepareTrack(fm, '[Channel2]')
+        fm._set('[Channel1]', 'file_bpm', 40)
+        fm._set('[Channel2]', 'file_bpm', 50)
+    })
+
+    it('immediately sets rate when not playing', () => {
+        fm._set('[Channel1]', 'rate', 0.2)
+        doDown(gridRows[1][0])
+        fm.processCommands()
+        expect(fm.getValue('[Channel1]', 'rate')).toBe(0)
+    })
+    it('starts timer when playing', () => {
+        fm._set('[Channel1]', 'rate', 0.2)
+        doDown(eqTop[1])
+        fm.processCommands()
+        expect(fm.getValue('[Channel1]', 'play')).toBe(1)
+
+        doDown(gridRows[1][0])
+        fm.triggerTimers() // 1st tick
+        fm.processCommands()
+        expect(fm.colorOf(gridRows[1][0])).toBe('amber')
+        expect(fm.getValue('[Channel1]', 'rate')).toBeLessThan(0.2)
+        for (let i = 0; i < 100; i++) {
+            fm.triggerTimers()
+            fm.processCommands()
+        }
+        expect(fm.getValue('[Channel1]', 'rate')).toEqual(0)
+        expect(fm.colorOf(gridRows[1][0])).toBe('off')
+    })
 })

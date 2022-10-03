@@ -77,7 +77,9 @@ var K24D: { [k: string]: {} } = {};
             green: new Note(0x0c + 8), // non-standard colors
         }
         return {
-            columns, faders, letters, layer
+            columns, faders, letters, layer,
+            leftEnc: { push: new Note(0x0d), turn: new CC(0x14) },
+            rightEnc: { push: new Note(0x0e), turn: new CC(0x15) },
         }
     })()
 
@@ -87,7 +89,7 @@ var K24D: { [k: string]: {} } = {};
             layer: 'deck' | 'overview'
             currentGroup: DeckGroup
             deck: Deck
-            dispatch: { [k: string]: (val: number) => void }
+            dispatch: { [k: string]: (ch: number, ctrl: number, val: number) => void }
         }
 
 
@@ -105,6 +107,7 @@ var K24D: { [k: string]: {} } = {};
             connDeck?: Deck // if empty, current deck is used
             connKey?: DeckControlKey
             color: (v: number) => Color // based on connection
+            timer?: boolean // redraw LED based on timer
         }
         interface PotSpec {
             midi: Pot
@@ -118,6 +121,7 @@ var K24D: { [k: string]: {} } = {};
             connDeck?: Deck // if empty, current deck is used
             connKey?: DeckControlKey
             color: (v: number) => Color // based on connection
+            timer?: boolean
         }
 
 
@@ -132,9 +136,35 @@ var K24D: { [k: string]: {} } = {};
             toggle(key: DeckControlKey) {
                 this.setValue(key, this.getValue(key) ? 0 : 1)
             }
+            setEQ(key: EqControlKey, v: number) {
+                engine.setValue(`[EqualizerRack1_${this.group}_Effect1]`, key, v)
+            }
             getPosSamples(): number {
                 return this.getValue('playposition') * this.getValue('track_samples')
             }
+            getPosBeats(): number {
+                return this.secondsToBeats(this.getValue('playposition') * this.getValue('duration'))
+            }
+            samplesToSeconds(sec: number) {
+                return sec / this.getValue('track_samplerate') / 2
+            }
+            secondsToBeats(sec: number): number {
+                return sec * this.getValue('file_bpm') / 60
+            }
+            samplesToBeats(s: number) {
+                return this.secondsToBeats(this.samplesToSeconds(s))
+
+            }
+            beatsToPos(b: number) {
+                return b / this.getValue('file_bpm') * 60 / this.getValue('duration')
+            }
+            beatsToSamples(b: number) {
+                return b / this.getValue('file_bpm') * 60 * 2 * this.getValue('track_samplerate')
+            }
+            beatsTillCue(k: DeckControlKey) {
+                return this.samplesToBeats(this.getValue(k)) - this.getPosBeats()
+            }
+
         }
 
         const state: State = {
@@ -147,11 +177,13 @@ var K24D: { [k: string]: {} } = {};
         const decks: DeckGroup[] = [
             '[Channel3]', '[Channel1]', '[Channel2]'
         ]
+
         class Layer {
-            private dispatch: { [k: string]: (v: number) => void } = {}
+            private dispatch: { [k: string]: (ch: number, ctrl: number, v: number) => void } = {}
             private conns: Connection[] = []
             private inits: (() => void)[] = []
             public midiPairs: MidiPair[] = []
+            public tickers: (() => void)[] = []
             constructor(public readonly name: typeof state.layer) { }
 
             init(f: () => void) {
@@ -165,19 +197,27 @@ var K24D: { [k: string]: {} } = {};
                 this.dispatch[up.toString()] = bs.onUp ? bs.onUp : () => { }
                 this.midiPairs.push(up)
                 const setColor = (v: number) => show_color(bs.note, bs.color(v))
+                let redraw = () => setColor(0)
                 if (bs.connKey) {
                     if (bs.connDeck) {
-                        this.conn(bs.connDeck.group, bs.connKey, setColor)
+                        redraw = this.conn(bs.connDeck.group, bs.connKey, setColor)
                     } else {
-                        this.connCurrentDeck(bs.connKey, setColor)
+                        redraw = this.connCurrentDeck(bs.connKey, setColor)
                     }
                 } else {
                     this.init(() => setColor(0))
                 }
+                if (bs.timer) {
+                    this.tickers.push(() => {
+                        if (state.layer == this.name) {
+                            redraw()
+                        }
+                    })
+                }
             }
             pot(ps: PotSpec) {
                 const turn = new MidiPair(CC.CC + chanOffset, ps.midi.turn.midino)
-                this.dispatch[turn.toString()] = ps.onTurn
+                this.dispatch[turn.toString()] = (_ch, _ctrl, v) => ps.onTurn(v)
                 this.midiPairs.push(turn)
             }
             rotary(rs: RotarySpec) {
@@ -188,24 +228,32 @@ var K24D: { [k: string]: {} } = {};
                     connDeck: rs.connDeck,
                     connKey: rs.connKey,
                     color: rs.color,
+                    timer: rs.timer,
                 })
                 this.pot(rs)
             }
             conn<Key extends keyof GroupControlMap>(group: GroupControlMap[Key], key: Key, h: (v: number, g: GroupControlMap[Key], k: Key) => void) {
-                this.conns.push(engine.makeConnection(group, key, (v, g, k) => {
+                const c = engine.makeConnection(group, key, (v, g, k) => {
                     if (state.layer === this.name) {
                         h(v, g, k)
                     }
-                }))
+                })
+                this.conns.push(c)
+                return () => c.trigger()
             }
             connCurrentDeck(key: DeckControlKey, h: (v: number, g: DeckGroup, k: DeckControlKey) => void) {
+                const conns: Connection[] = []
                 decks.forEach(group => {
-                    this.conns.push(engine.makeConnection(group, key, (v, g, k) => {
+                    conns.push(engine.makeConnection(group, key, (v, g, k) => {
                         if (state.layer === this.name && state.currentGroup === g) {
                             h(v, g, k)
                         }
                     }))
                 })
+                this.conns.push(...conns)
+                return () => {
+                    conns.forEach(c => c.trigger())
+                }
             }
 
             activate() {
@@ -215,6 +263,321 @@ var K24D: { [k: string]: {} } = {};
                 this.inits.forEach(f => f())
             }
         }
+
+        class RateZeroer {
+            public enabled = false
+            public ledON = false
+            public deck: Deck
+
+            public zeroDeck(d: Deck) {
+                this.deck = d
+                if (!this.deck.getValue('play') && !this.deck.getValue('sync_mode')) {
+                    this.deck.setValue('rate', 0)
+                    this.disable()
+                }
+                this.enabled = true
+            }
+            public disable() {
+                this.enabled = false
+                this.ledON = false
+            }
+
+            public tick() {
+                if (!this.enabled) {
+                    return
+                }
+                if (!this.deck.getValue('track_loaded')) {
+                    this.disable()
+                }
+                let rate = this.deck.getValue('rate')
+                const delta = 0.005
+                if (rate < delta && rate > -delta) {
+                    this.deck.setValue('rate', 0)
+                    this.disable()
+                    return
+                }
+                rate += rate < 0 ? delta : -delta
+                this.deck.setValue('rate', rate)
+                this.ledON = !this.ledON
+            }
+        }
+        const rateZeroer = new RateZeroer()
+
+
+        function lerp(lo: number, hi: number, perc: number) {
+            return lo + (hi - lo) * perc
+        }
+        interface TransitionOpts {
+            next: Deck
+            prev: Deck
+            xfade01: number
+        }
+        interface Transition {
+            tick(opts: TransitionOpts): void
+            clean(opts: TransitionOpts): void
+        }
+        const delayLows = {
+            tick: function (opts: TransitionOpts) {
+                opts.next.setEQ('parameter1', lerp(0, 1, opts.xfade01 * 2 - 0.5))
+                opts.prev.setEQ('parameter1', lerp(1, 0, opts.xfade01 * 2 - 0.5))
+            },
+            clean: function (opts: TransitionOpts) {
+                opts.next.setEQ('parameter1', 1)
+                opts.prev.setEQ('parameter1', 1)
+            },
+        }
+        class AutoMixer {
+            private readonly TRANSITION_LENGTH = 10
+
+            private prev = new Deck('[Channel1]')
+            private next = new Deck('[Channel2]')
+            private phase: 'idle' | 'track_ready' | 'init' | 'in_progress' | 'finished' = 'idle'
+            private customTransition = delayLows
+            private alignerCount = 0
+            private isAligning = false
+            public enableAutomix() {
+                this.prev = new Deck('[Channel1]')
+                this.next = new Deck('[Channel2]')
+                this.phase = 'idle'
+            }
+            disableAutomix() {
+                this.phase = 'idle'
+                engine.setValue('[Master]', 'crossfader', 0)
+            }
+            public tick() {
+                if (this.isAligning) {
+                    this.alignTick()
+                }
+                if (!engine.getValue('[AutoDJ]', 'enabled')) {
+                    this.phase = 'idle'
+                    return
+                }
+                this.automixTick()
+
+            }
+            private automixTick() {
+                if (!this.prev.getValue('track_loaded') || !this.next.getValue('track_loaded')) {
+                    return
+                }
+
+                let xfade01 = (1 + engine.getValue('[Master]', 'crossfader')) / 2
+                if (this.next.group === '[Channel1]') {
+                    xfade01 = 1 - xfade01
+                }
+                this.prev.setValue('volume', 1)
+                this.next.setValue('volume', 1)
+                const prevPlaying = this.prev.getValue('play')
+                const nextPlaying = this.next.getValue('play')
+
+                // Figure out the current phase:
+                if (this.phase === 'idle') {
+                    this.phase = 'track_ready'
+                    if (!prevPlaying) {
+                        let tmp = this.next
+                        this.next = this.prev
+                        this.prev = tmp
+                    }
+                    print('IDLE -> TRACK_READY')
+                } else if (this.phase === 'track_ready' && nextPlaying) {
+                    this.phase = 'init'
+                    print('TRACK_READY -> INIT')
+                } else if (this.phase === 'init') {
+                    this.phase = 'in_progress'
+                    print('INIT -> IN_PROGRESS')
+                } else if (this.phase === 'in_progress' && (xfade01 === 1 || !prevPlaying)) {
+                    this.phase = 'finished'
+                    print('IN_PROGRESS -> FINISHED')
+                } else if (this.phase === 'finished') {
+                    this.phase = 'idle'
+                    print('FINISHED -> IDLE')
+                }
+                const transitionHalfperiodBeats = this.next.secondsToBeats(this.TRANSITION_LENGTH / 2)
+
+                if (this.phase === 'track_ready') {
+                    // This triggers on every tick. That's fine, though,
+                    // as it undoes any mess that the user can do by skipping
+                    // tracks or jumping.
+                    const startCue = this.next.getValue('intro_end_position')
+                    if (startCue >= 0) {
+                        const want = this.next.samplesToBeats(startCue) - transitionHalfperiodBeats
+                        const wantPos = this.next.beatsToPos(want)
+                        this.next.setValue('playposition', wantPos)
+                    }
+                }
+
+                if (this.phase === 'track_ready') {
+                    // Check if we should start transition now:
+                    const exitSamples = this.prev.getValue('outro_start_position')
+                    const exitBeats = this.prev.samplesToBeats(exitSamples) - transitionHalfperiodBeats
+                    if (exitBeats <= this.prev.getPosBeats()) {
+                        engine.setValue('[AutoDJ]', 'fade_now', 1.0)
+                        engine.setValue('[AutoDJ]', 'fade_now', 0.0)
+                    }
+                    return // nothing else to do
+                }
+
+                if (this.phase === 'init') {
+                    // one-time sync, with phase alignment:
+                    this.next.setValue('beatsync_phase', 1)
+                    this.next.setValue('beatsync_phase', 0) // release button
+
+                    // Now that the tracks are in sync, make the this.next track the leader:
+                    this.next.setValue('sync_mode', 2) // leader
+                    this.prev.setValue('sync_mode', 1) // follower
+
+                    // Custom effect/transition:
+                    this.customTransition = delayLows
+                }
+
+                if (this.phase === 'in_progress') {
+                    this.customTransition.tick({ prev: this.prev, next: this.next, xfade01: xfade01 })
+                    if (xfade01 < 0.3) {
+                        this.fixAlignment({ prev: this.prev, next: this.next, xfade01: 0 })
+                    }
+
+                    // Adjust the tempo of the next track; previous follows
+                    const want = lerp(this.prev.getValue('file_bpm'), this.next.getValue('file_bpm'), xfade01)
+                    this.next.setValue('bpm', want)
+                }
+
+                if (this.phase === 'finished') {
+                    // Clean up after transision:
+                    this.next.setValue('bpm', this.next.getValue('file_bpm')) // to be on the safe side lol
+                    this.customTransition.clean({ prev: this.prev, next: this.next, xfade01: 1 })
+                }
+            }
+            fixAlignment(opts: TransitionOpts) {
+                const prev = opts.prev
+                const next = opts.next
+                const beatsTillExit = prev.beatsTillCue('outro_start_position')
+                const beatsTillStart = next.beatsTillCue('intro_end_position')
+                // Diff mod 16, preference towards zero:
+                let diff = (beatsTillStart - beatsTillExit) % 16 - 16
+                while (diff < -8) {
+                    diff += 16
+                }
+                if (-0.3 < diff && diff < 0.3) {
+                    return
+                }
+                // Have to speed up by diff
+                const wantBeats = next.getPosBeats() + diff
+                next.setValue('playposition', next.beatsToPos(wantBeats))
+            }
+
+
+
+
+            alignAndSetLoop(next: Deck) {
+                this.next = next
+                if (next.getValue('play') || next.getValue('volume') > 0.1) {
+                    return // dangerous
+                }
+                decks.forEach(group => {
+                    if (group === next.group) {
+                        return
+                    }
+                    const d = new Deck(group)
+                    if (d.getValue('play') && d.getValue('volume')) {
+                        this.prev = d
+                    }
+                })
+                if (!this.prev) {
+                    return // nothing to sync to
+                }
+
+                if (next.getValue('loop_enabled')) {
+                    reloop(next)
+                }
+
+                const exitCue = this.prev.getValue('outro_start_position')
+                const startCue = this.next.getValue('intro_end_position')
+                if (exitCue < 0 || startCue < 0) {
+                    return
+                }
+
+                this.isAligning = true
+                this.alignerCount = 0
+            }
+            alignTick() {
+
+                this.alignerCount++
+                const exitCue = this.prev.getValue('outro_start_position')
+                const startCue = this.next.getValue('intro_end_position')
+                print(`aligner tick ${this.alignerCount} at deck ${this.next.group}`)
+
+                if (this.alignerCount == 2) {
+                    this.next.setValue('playposition', this.next.beatsToPos(this.next.samplesToBeats(startCue)))
+                    this.next.setValue('play', 1)
+                    this.next.setValue('beatsync_tempo', 1)
+                    this.next.setValue('beatsync_tempo', 0)
+                    this.next.setValue('beatsync_phase', 1)
+                    this.next.setValue('beatsync_phase', 0)
+                    return
+                }
+
+
+                const beatsTillExit = this.prev.beatsTillCue('outro_start_position')
+                const beatsTillStart = this.next.beatsTillCue('intro_end_position')
+                let beatDiff = (beatsTillStart - beatsTillExit) % 16
+                if (beatDiff > 8) {
+                    beatDiff -= 16
+                }
+                if (beatDiff < -8) {
+                    beatDiff += 16
+                }
+                beatDiff = Math.round(beatDiff)
+                print('ALIGNER[' + this.alignerCount + ']: need to skip ' + beatDiff + ' beats (' + beatsTillExit + ' - ' + beatsTillStart + ')')
+
+                const gotoPos = this.next.beatsToPos(this.next.getPosBeats() + beatDiff)
+                this.next.setValue('playposition', gotoPos)
+                if (this.alignerCount == 4) {
+
+                    const startCueBeats = this.next.samplesToBeats(startCue)
+                    const cp8s = this.next.beatsToSamples(startCueBeats + 8)
+                    const loopEndPos = this.next.beatsToSamples(startCueBeats + 24)
+                    print(`setting loop at beats ${startCueBeats + 8} to ${startCueBeats + 24}`)
+                    print(`setting loop at pos ${cp8s} to ${loopEndPos}`)
+
+                    this.next.setValue('loop_start_position', cp8s)
+                    this.next.setValue('loop_end_position', loopEndPos)
+                }
+                if (this.alignerCount == 6) {
+                    this.next.setValue('loop_move_16_backward' as DeckControlKey, 1)
+                }
+                if (this.alignerCount >= 10) {
+                    if (!this.next.getValue('loop_enabled')) {
+                        this.next.setValue('reloop_toggle', 1)
+                    }
+                    this.isAligning = false
+                }
+            }
+
+        }
+
+        class HeadphoneGain {
+            private scales = [
+                { offset: 0, factor: 1 },
+                { offset: 0.8, factor: 1 },
+                { offset: 1.6, factor: 2 },
+            ]
+            private idx = 0
+            private fader = 10
+            public flip() {
+                this.idx = (this.idx + 1) % this.scales.length
+                this.setGain()
+            }
+            public setFader(v: number) {
+                print(`setFader ${v}`)
+                this.fader = v
+                this.setGain()
+            }
+            setGain() {
+                const scale = this.scales[this.idx]
+                const v = scale.offset + this.fader / 127 * scale.factor
+                engine.setValue('[Master]', 'headGain', v)
+            }
+        }
+
 
 
         function show_color(note: Note, color: Color) {
@@ -240,6 +603,7 @@ var K24D: { [k: string]: {} } = {};
 
         const layerOverview = new Layer('overview')
         const layerDeck = new Layer('deck')
+        const headphones = new HeadphoneGain()
 
         function mapSharedSection(layer: Layer) {
 
@@ -275,7 +639,9 @@ var K24D: { [k: string]: {} } = {};
 
                 layer.rotary({
                     midi: column[3],
-                    onTurn: (v: number) => d.setValue('filterLow', v / 64),
+                    onTurn: (v: number) => {
+                        d.setValue('filterLow', v / 64)
+                    },
                     onDown: () => {
                         state.currentGroup = d.group
                         state.deck = d
@@ -292,12 +658,43 @@ var K24D: { [k: string]: {} } = {};
             })
             const lastEqCol = midimap.columns[3]
             layer.rotary({
+                midi: lastEqCol[1],
+                onTurn: v => {
+                    headphones.setFader(v)
+                    print(`headGain turn: ${v}`)
+                },
+
+                onDown: () => headphones.flip(),
+                color: () => Color.OFF,
+            })
+            layer.rotary({
                 midi: lastEqCol[3],
                 onTurn: () => { }, // FX? Heaphone gain?
                 onDown: () => {
                     layerOverview.activate()
                 },
                 color: () => state.layer === 'overview' ? Color.AMBER : Color.OFF,
+            })
+
+            layer.rotary({
+                midi: midimap.leftEnc,
+                onTurn: (v) => {
+                    engine.setValue('[Playlist]', v < 10 ? 'SelectNextPlaylist' : 'SelectPrevPlaylist', 1)
+                },
+                onDown: () => engine.setValue('[Playlist]', 'ToggleSelectedSidebarItem', 1),
+                color: () => Color.OFF,
+            })
+            layer.rotary({
+                midi: midimap.rightEnc,
+                onTurn: v => {
+                    engine.setValue('[Playlist]', 'SelectTrackKnob', v < 10 ? 1 : -1)
+                },
+                onDown: () => engine.setValue('[PreviewDeck1]', 'LoadSelectedTrackAndPlay', 1),
+                onUp: () => {
+                    engine.setValue('[PreviewDeck1]', 'stop', 1)
+                    engine.setValue('[PreviewDeck1]', 'eject', 1)
+                },
+                color: () => Color.OFF,
             })
         } // mapEQSection
 
@@ -316,7 +713,7 @@ var K24D: { [k: string]: {} } = {};
         const fourthRow = ['m', 'n', 'o', 'p'] as const
 
         mapSharedSection(layerOverview)
-        // reloop || ?
+        // reloop || headphone gain flip
         // tempo0 || global sync lock
         // ?      || ?
         // load   || AutoDJ bottom
@@ -334,8 +731,9 @@ var K24D: { [k: string]: {} } = {};
             const secondBtn = midimap.letters[secondRow[idx]]
             layerOverview.button({
                 note: secondBtn,
-                onDown: () => d.setValue('rate', 0),
-                color: () => Color.OFF,
+                onDown: () => rateZeroer.zeroDeck(d),
+                timer: true,
+                color: () => (rateZeroer.ledON && rateZeroer.deck.group === group) ? Color.AMBER : Color.OFF,
             })
             const thirdBtn = midimap.letters[thirdRow[idx]]
             layerOverview.button({
@@ -346,19 +744,42 @@ var K24D: { [k: string]: {} } = {};
             const fourthBtn = midimap.letters[fourthRow[idx]]
             layerOverview.button({
                 note: fourthBtn,
-                onDown: () => d.setValue('LoadSelectedTrack', 1), // TODO: smart load
+                onDown: () => {
+                    d.setValue('LoadSelectedTrack', 1) // TODO: smart load
+                    if (d.getValue('sync_mode')) {
+                        adj.alignAndSetLoop(d)
+                    }
+                },
                 color: () => Color.OFF,
             })
         })
         layerOverview.button({
             note: midimap.letters.d,
-            onDown: () => { },
+            onDown: () => headphones.flip(),
             color: () => Color.OFF,
         })
+        const isGLobalLock = () => {
+            return engine.getValue(decks[0], 'sync_mode') && engine.getValue(decks[1], 'sync_mode') &&
+                engine.getValue(decks[2], 'sync_mode')
+        }
         layerOverview.button({
             note: midimap.letters.h,
-            onDown: () => { }, // TODO: global lock
-            color: () => Color.OFF,
+            onDown: () => {
+                if (isGLobalLock()) {
+                    decks.forEach(d => {
+                        engine.setValue(d, 'sync_enabled', 0)
+                    })
+                    return
+                }
+                decks.forEach(d => {
+                    if (!engine.getValue(d, 'play') || !engine.getValue(d, 'volume')) {
+                        engine.setValue(d, 'sync_enabled', 1)
+                    }
+                })
+                decks.forEach(d => engine.setValue(d, 'sync_enabled', 1))
+            },
+            timer: true,
+            color: () => isGLobalLock() ? Color.AMBER : Color.OFF,
         })
         layerOverview.button({
             note: midimap.letters.l,
@@ -408,11 +829,9 @@ var K24D: { [k: string]: {} } = {};
 
         layerDeck.button({
             note: midimap.letters.e,
-            onDown: () => {
-                // TODO: tempo robot
-                state.deck.setValue('rate', 0)
-            },
-            color: () => Color.OFF,
+            onDown: () => rateZeroer.zeroDeck(state.deck),
+            timer: true,
+            color: () => (rateZeroer.ledON && rateZeroer.deck.group === state.currentGroup) ? Color.AMBER : Color.OFF,
         })
         layerDeck.button({
             note: midimap.letters.f,
@@ -433,12 +852,6 @@ var K24D: { [k: string]: {} } = {};
             onDown: () => downup(state.deck, 'beatjump_forward'),
             color: () => Color.RED,
         })
-        layerDeck.init(() => {
-            show_color(midimap.letters.g, Color.RED)
-            show_color(midimap.letters.h, Color.RED)
-        })
-
-
 
 
         thirdRow.forEach((l, idx) => {
@@ -467,14 +880,51 @@ var K24D: { [k: string]: {} } = {};
                 },
             })
         })
-        // other letters here
 
+        layerDeck.button({
+            note: midimap.letters.m,
+            onDown: () => state.deck.setValue('cue_gotoandplay', 1),
+            onUp: () => state.deck.setValue('cue_gotoandplay', 0),
+            color: () => Color.AMBER,
+        })
+        layerDeck.button({
+            note: midimap.letters.n,
+            onDown: () => state.deck.toggle('play'),
+            color: v => v ? Color.RED : Color.OFF,
+            connKey: 'play_indicator',
+        })
+        layerDeck.button({
+            note: midimap.letters.o,
+            onDown: () => { },
+            color: () => Color.OFF,
+        })
+        layerDeck.button({
+            note: midimap.letters.p,
+            onDown: () => { },
+            color: () => Color.OFF,
+        })
+
+        engine.beginTimer(200, () => {
+            rateZeroer.tick()
+            layerOverview.tickers.forEach(t => t())
+            layerDeck.tickers.forEach(t => t())
+        })
+        const adj = new AutoMixer()
+        engine.beginTimer(50, () => adj.tick())
+        engine.makeConnection('[AutoDJ]', 'enabled', v => {
+            if (v) {
+                adj.enableAutomix()
+            } else {
+                adj.disableAutomix()
+            }
+        })
 
         return {
             state: state,
             midiPairs: layerOverview.midiPairs,
+            adj: adj,
             init: () => {
-                layerDeck.activate()
+                layerOverview.activate()
             },
         }
     } // newK2
