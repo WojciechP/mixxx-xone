@@ -328,125 +328,222 @@ var K24D: { [k: string]: {} } = {};
                 opts.prev.setEQ('parameter1', 1)
             },
         }
+        type AutoMixerPhase = 'off' | 'loading' | 'loaded' | 'mixing' | 'finishing'
+        type AtuoMixerPhaseHandler = () => AutoMixerPhase
+        interface TransitionProps {
+            prevSyncBeats: number
+            nextSyncBeats: number
+            longMix: boolean
+            transitionHalfperiodBeats: number
+        }
         class AutoMixer {
             private readonly TRANSITION_LENGTH = 10
+            public setColor = (c: Color) => { }
 
             private prev = new Deck('[Channel1]')
-            private next = new Deck('[Channel2]')
-            private phase: 'idle' | 'track_ready' | 'init' | 'in_progress' | 'finished' = 'idle'
+            public next = new Deck('[Channel2]')
+            public phase: AutoMixerPhase = 'off'
+            public numTicks = 0;
             private customTransition = delayLows
             private alignerCount = 0
             private isAligning = false
+            ledColor = Color.OFF
             public enableAutomix() {
                 this.prev = new Deck('[Channel1]')
                 this.next = new Deck('[Channel2]')
-                this.phase = 'idle'
+                let numPlaying = 0
+                if (this.prev.getValue('play')) {
+                    numPlaying++
+                }
+                if (this.next.getValue('play')) {
+                    numPlaying++
+                }
+                if (numPlaying !== 1) {
+                    print(`cannot enable automix: there are ${numPlaying} playing decks`)
+                    return
+                }
+                this.phase = 'loading'
             }
             disableAutomix() {
-                this.phase = 'idle'
+                this.phase = 'off'
                 engine.setValue('[Master]', 'crossfader', 0)
+                this.setColor(Color.OFF)
             }
+            toggle() {
+                if (this.phase === 'off') {
+                    this.enableAutomix()
+                } else {
+                    this.disableAutomix()
+                }
+            }
+
             public tick() {
                 if (this.isAligning) {
                     this.alignTick()
                 }
-                if (!engine.getValue('[AutoDJ]', 'enabled')) {
-                    this.phase = 'idle'
+                if (this.phase === 'off') {
                     return
                 }
                 this.automixTick()
+                this.setColor(this.ledColor)
+            }
+            private transitionPoints(): TransitionProps {
+                const outroStartSamples = this.prev.getValue('outro_start_position')
+                const introEndSamples = this.next.getValue('intro_end_position')
+                let prevSyncSamples = outroStartSamples
+                let nextSyncSamples = introEndSamples
+                const prevBPM = this.prev.getValue('bpm') // current BPM, including rate controls
+                const nextBPM = this.next.getValue('file_bpm') // next track raw BPM
+                const bpmDiff = Math.abs(nextBPM - prevBPM) > 8
+                const longMix = (prevSyncSamples > 0 && nextSyncSamples > 0 && !bpmDiff)
+                if (longMix) {
+                    return {
+                        prevSyncBeats: this.prev.samplesToBeats(prevSyncSamples),
+                        nextSyncBeats: this.next.samplesToBeats(nextSyncSamples),
+                        longMix: longMix,
+                        transitionHalfperiodBeats: this.next.secondsToBeats(this.TRANSITION_LENGTH / 2),
+                    }
+                }
+                prevSyncSamples = this.prev.getValue('outro_end_position')
+                if (prevSyncSamples <= 0) {
+                    prevSyncSamples = this.prev.getValue('track_samples')
+                }
+                nextSyncSamples = this.next.getValue('intro_start_position')
+                if (nextSyncSamples <= 0) {
+                    nextSyncSamples = 0
+                }
+                return {
+                    prevSyncBeats: this.prev.samplesToBeats(prevSyncSamples),
+                    nextSyncBeats: this.next.samplesToBeats(nextSyncSamples),
+                    longMix: false,
+                    transitionHalfperiodBeats: 1,
+                }
+            }
 
+            private atLoading(): AutoMixerPhase {
+                this.ledColor = (this.numTicks % 2 && this.numTicks < 6) ? Color.AMBER : Color.OFF
+                if (this.numTicks % 12 !== 0) {
+                    return 'loading' // don't busy-loop
+                }
+                if (this.next.getValue('play')) {
+                    const tmp = this.next
+                    this.next = this.prev
+                    this.prev = tmp
+                }
+                const isLoaded = this.next.getValue('track_loaded')
+                if (isLoaded) {
+                    return 'loaded'
+                }
+                // tickle autoDJ to load a next track
+                engine.setValue('[AutoDJ]', 'enabled', 1)
+                engine.setValue('[AutoDJ]', 'enabled', 0)
+                // keep master crossfader in the middle, though
+                engine.setValue('[Master]', 'crossfader', 0)
+                return 'loading'
+            }
+            private oldBPM = 0;
+            private transitionProps: TransitionProps
+            private atLoaded(): AutoMixerPhase {
+                if (this.next.getValue('play')) {
+                    const tmp = this.next
+                    this.next = this.prev
+                    this.prev = tmp
+                }
+                if (!this.next.getValue('track_loaded')) {
+                    return 'loading' // someone sniped out the track
+                }
+                const sync = this.transitionPoints()
+                const maxTicks = sync.longMix ? 5 : 3
+                this.ledColor = (this.numTicks % 2 && this.numTicks < maxTicks) ? Color.GREEN : Color.OFF
+                // Adjust start position on every tick:
+                const want = sync.nextSyncBeats - sync.transitionHalfperiodBeats
+                const wantPos = this.next.beatsToPos(want)
+                this.next.setValue('playposition', wantPos)
+                // Check if we should start transition now:
+                if (sync.prevSyncBeats <= this.prev.getPosBeats() + sync.transitionHalfperiodBeats) {
+                    this.next.setValue('play', 1)
+                    if (sync.longMix) {
+                        // one-time sync, with phase alignment:
+                        this.next.setValue('beatsync_phase', 1)
+                        this.next.setValue('beatsync_phase', 0) // release button
+                        // Now that the tracks are in sync, make the this.next track the leader:
+                        this.next.setValue('sync_mode', 2) // leader
+                        this.prev.setValue('sync_mode', 1) // follower
+                        this.customTransition = delayLows
+                    } else {
+                        this.next.setValue('sync_enabled', 0)
+                        this.prev.setValue('sync_enabled', 0)
+                        this.next.setValue('rate', 0)
+                    }
+                    this.oldBPM = this.prev.getValue('bpm')
+                    this.transitionProps = sync
+                    return 'mixing'
+                }
+                return 'loaded'
+            }
+            private atMixing(): AutoMixerPhase {
+                this.ledColor = (this.numTicks % 2 && this.numTicks < 7) ? Color.GREEN : Color.OFF
+                const sync = this.transitionProps
+                const beatsToExit = sync.prevSyncBeats - this.prev.getPosBeats()
+                let xfade01 = 0.5 - (beatsToExit / sync.transitionHalfperiodBeats / 2)
+                if (xfade01 < 0) {
+                    xfade01 = 0 // safety huh
+                }
+                if (beatsToExit <= 0) {
+                    // we're past the sync point: calculate xfade01 based on the next track instead:
+                    const beatsAfterStart = this.next.getPosBeats() - sync.nextSyncBeats
+                    xfade01 = beatsAfterStart / sync.transitionHalfperiodBeats / 2 + 0.5
+                }
+                if (xfade01 > 1) {
+                    xfade01 = 1 // safety huh
+                }
+                if (xfade01 <= 0.5) {
+                    this.next.setValue('volume', xfade01 * 2)
+                }
+                if (xfade01 >= 0.5) {
+                    this.prev.setValue('volume', 2 - xfade01 * 2)
+                }
+
+
+                // TODO: only adjust tempo for long mix?
+                if (sync.longMix) {
+                    const want = lerp(this.oldBPM, this.next.getValue('file_bpm'), xfade01)
+                    this.next.setValue('bpm', want)
+                    this.customTransition.tick({ prev: this.prev, next: this.next, xfade01: xfade01 })
+                }
+                if (xfade01 === 1) {
+                    this.customTransition.clean({ prev: this.prev, next: this.next, xfade01: 1 })
+                    engine.softTakeoverIgnoreNextValue(this.prev.group, 'volume')
+                    engine.softTakeoverIgnoreNextValue(this.next.group, 'volume')
+                    return 'finishing'
+                }
+
+                return 'mixing'
+            }
+            private atFinishing(): AutoMixerPhase {
+                this.prev.setValue('play', 0)
+                this.prev.setValue('eject', 1)
+                return 'loading'
+            }
+            private handlers: { [key in AutoMixerPhase]: AtuoMixerPhaseHandler } = {
+                off: () => 'off',
+                loading: () => this.atLoading(),
+                loaded: () => this.atLoaded(),
+                mixing: () => this.atMixing(),
+                finishing: () => this.atFinishing(),
             }
             private automixTick() {
-                if (!this.prev.getValue('track_loaded') || !this.next.getValue('track_loaded')) {
-                    return
+                print(`audomix tick: ${this.phase}`)
+                this.numTicks = (this.numTicks + 1) % 12
+                if (!this.prev.getValue('track_loaded') && !this.next.getValue('track_loaded')) {
+                    this.disableAutomix()
                 }
-
-                let xfade01 = (1 + engine.getValue('[Master]', 'crossfader')) / 2
-                if (this.next.group === '[Channel1]') {
-                    xfade01 = 1 - xfade01
+                const phase = this.handlers[this.phase]()
+                if (phase !== this.phase) {
+                    print(`AutoMixer: ${this.phase} -> ${phase}`)
                 }
-                this.prev.setValue('volume', 1)
-                this.next.setValue('volume', 1)
-                const prevPlaying = this.prev.getValue('play')
-                const nextPlaying = this.next.getValue('play')
+                this.phase = phase
 
-                // Figure out the current phase:
-                if (this.phase === 'idle') {
-                    this.phase = 'track_ready'
-                    if (!prevPlaying) {
-                        let tmp = this.next
-                        this.next = this.prev
-                        this.prev = tmp
-                    }
-                    print('IDLE -> TRACK_READY')
-                } else if (this.phase === 'track_ready' && nextPlaying) {
-                    this.phase = 'init'
-                    print('TRACK_READY -> INIT')
-                } else if (this.phase === 'init') {
-                    this.phase = 'in_progress'
-                    print('INIT -> IN_PROGRESS')
-                } else if (this.phase === 'in_progress' && (xfade01 === 1 || !prevPlaying)) {
-                    this.phase = 'finished'
-                    print('IN_PROGRESS -> FINISHED')
-                } else if (this.phase === 'finished') {
-                    this.phase = 'idle'
-                    print('FINISHED -> IDLE')
-                }
-                const transitionHalfperiodBeats = this.next.secondsToBeats(this.TRANSITION_LENGTH / 2)
-
-                if (this.phase === 'track_ready') {
-                    // This triggers on every tick. That's fine, though,
-                    // as it undoes any mess that the user can do by skipping
-                    // tracks or jumping.
-                    const startCue = this.next.getValue('intro_end_position')
-                    if (startCue >= 0) {
-                        const want = this.next.samplesToBeats(startCue) - transitionHalfperiodBeats
-                        const wantPos = this.next.beatsToPos(want)
-                        this.next.setValue('playposition', wantPos)
-                    }
-                }
-
-                if (this.phase === 'track_ready') {
-                    // Check if we should start transition now:
-                    const exitSamples = this.prev.getValue('outro_start_position')
-                    const exitBeats = this.prev.samplesToBeats(exitSamples) - transitionHalfperiodBeats
-                    if (exitBeats <= this.prev.getPosBeats()) {
-                        engine.setValue('[AutoDJ]', 'fade_now', 1.0)
-                        engine.setValue('[AutoDJ]', 'fade_now', 0.0)
-                    }
-                    return // nothing else to do
-                }
-
-                if (this.phase === 'init') {
-                    // one-time sync, with phase alignment:
-                    this.next.setValue('beatsync_phase', 1)
-                    this.next.setValue('beatsync_phase', 0) // release button
-
-                    // Now that the tracks are in sync, make the this.next track the leader:
-                    this.next.setValue('sync_mode', 2) // leader
-                    this.prev.setValue('sync_mode', 1) // follower
-
-                    // Custom effect/transition:
-                    this.customTransition = delayLows
-                }
-
-                if (this.phase === 'in_progress') {
-                    this.customTransition.tick({ prev: this.prev, next: this.next, xfade01: xfade01 })
-                    if (xfade01 < 0.3) {
-                        this.fixAlignment({ prev: this.prev, next: this.next, xfade01: 0 })
-                    }
-
-                    // Adjust the tempo of the next track; previous follows
-                    const want = lerp(this.prev.getValue('file_bpm'), this.next.getValue('file_bpm'), xfade01)
-                    this.next.setValue('bpm', want)
-                }
-
-                if (this.phase === 'finished') {
-                    // Clean up after transision:
-                    this.next.setValue('bpm', this.next.getValue('file_bpm')) // to be on the safe side lol
-                    this.customTransition.clean({ prev: this.prev, next: this.next, xfade01: 1 })
-                }
             }
             fixAlignment(opts: TransitionOpts) {
                 const prev = opts.prev
@@ -612,6 +709,7 @@ var K24D: { [k: string]: {} } = {};
             decks.forEach((group, i) => {
                 const column = midimap.columns[i]
                 const d = new Deck(group)
+                engine.softTakeover(d.group, 'volume', true)
 
                 layer.rotary({
                     midi: column[0],
@@ -624,9 +722,15 @@ var K24D: { [k: string]: {} } = {};
                     midi: column[1],
                     onTurn: (v: number) => d.setValue('filterHigh', v / 64),
                     onDown: () => d.toggle('play'),
-                    color: v => v ? Color.RED : Color.OFF,
                     connDeck: d,
-                    connKey: 'play_indicator'
+                    timer: true,
+                    connKey: 'play_indicator',
+                    color: v => {
+                        if (adj.next.group === d.group && adj.phase === 'loaded') {
+                            return Color.GREEN
+                        }
+                        return v ? Color.RED : Color.OFF
+                    },
                 })
                 // TODO: blink near end?
 
@@ -666,8 +770,16 @@ var K24D: { [k: string]: {} } = {};
             })
             const lastEqCol = midimap.columns[3]
             layer.rotary({
+                midi: lastEqCol[1],
+                onTurn: () => { },
+                onDown: () => adj.toggle(),
+                color: () => Color.OFF, // ADJ sets color manually
+            })
+            adj.setColor = (c: Color) => show_color(lastEqCol[1].push, c)
+
+            layer.rotary({
                 midi: lastEqCol[3],
-                onTurn: () => { }, // FX? Heaphone gain?
+                onTurn: () => { },
                 onDown: () => {
                     layerOverview.activate()
                 },
@@ -717,6 +829,8 @@ var K24D: { [k: string]: {} } = {};
         const secondRow = ['e', 'f', 'g', 'h'] as const
         const thirdRow = ['i', 'j', 'k', 'l'] as const
         const fourthRow = ['m', 'n', 'o', 'p'] as const
+
+        const adj = new AutoMixer()
 
         mapSharedSection(layerOverview)
         // reloop || headphone gain flip
@@ -916,15 +1030,7 @@ var K24D: { [k: string]: {} } = {};
             layerOverview.tickers.forEach(t => t())
             layerDeck.tickers.forEach(t => t())
         })
-        const adj = new AutoMixer()
         engine.beginTimer(50, () => adj.tick())
-        engine.makeConnection('[AutoDJ]', 'enabled', v => {
-            if (v) {
-                adj.enableAutomix()
-            } else {
-                adj.disableAutomix()
-            }
-        })
 
         return {
             state: state,

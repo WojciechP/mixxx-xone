@@ -82,6 +82,7 @@ function newFake() {
         }
         engine._timers.push(new Timer(f))
     }
+    engine.softTakeover = () => { }
 
     engine.triggerTimers = () => {
         engine._timers.forEach(t => t.func())

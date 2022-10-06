@@ -9,6 +9,8 @@ interface Engine {
     makeConnection<Key extends keyof GroupControlMap>(group: GroupControlMap[Key], key: Key, h: (val: number, group: GroupControlMap[Key], key: Key) => void): Connection
     trigger<Key extends keyof GroupControlMap>(group: GroupControlMap[Key], key: Key): void
     beginTimer(ms: number, h: () => void, oneShot?: boolean): void
+    softTakeover<Key extends keyof GroupControlMap>(group: GroupControlMap[Key], key: Key, on: boolean): void
+    softTakeoverIgnoreNextValue<Key extends keyof GroupControlMap>(group: GroupControlMap[Key], key: Key): void
 }
 declare const engine: Engine
 declare var print: (thing: {}) => void
