@@ -362,11 +362,16 @@ var K24D: { [k: string]: {} } = {};
                     print(`cannot enable automix: there are ${numPlaying} playing decks`)
                     return
                 }
+                engine.softTakeover(this.prev.group, 'volume', false)
+                engine.softTakeover(this.next.group, 'volume', false)
+
                 this.phase = 'loading'
             }
             disableAutomix() {
                 this.phase = 'off'
                 engine.setValue('[Master]', 'crossfader', 0)
+                engine.softTakeover(this.prev.group, 'volume', true)
+                engine.softTakeover(this.next.group, 'volume', true)
                 this.setColor(Color.OFF)
             }
             toggle() {
@@ -432,6 +437,8 @@ var K24D: { [k: string]: {} } = {};
                 }
                 const isLoaded = this.next.getValue('track_loaded')
                 if (isLoaded) {
+                    // keep master crossfader in the middle, though
+                    engine.setValue('[Master]', 'crossfader', 0)
                     return 'loaded'
                 }
                 // tickle autoDJ to load a next track
@@ -477,6 +484,8 @@ var K24D: { [k: string]: {} } = {};
                     }
                     this.oldBPM = this.prev.getValue('bpm')
                     this.transitionProps = sync
+                    engine.softTakeoverIgnoreNextValue(this.prev.group, 'volume')
+                    engine.softTakeoverIgnoreNextValue(this.next.group, 'volume')
                     return 'mixing'
                 }
                 return 'loaded'
@@ -534,7 +543,7 @@ var K24D: { [k: string]: {} } = {};
             }
             private automixTick() {
                 print(`audomix tick: ${this.phase}`)
-                this.numTicks = (this.numTicks + 1) % 12
+                this.numTicks = (this.numTicks + 1) % 24
                 if (!this.prev.getValue('track_loaded') && !this.next.getValue('track_loaded')) {
                     this.disableAutomix()
                 }
@@ -1030,7 +1039,7 @@ var K24D: { [k: string]: {} } = {};
             layerOverview.tickers.forEach(t => t())
             layerDeck.tickers.forEach(t => t())
         })
-        engine.beginTimer(50, () => adj.tick())
+        engine.beginTimer(100, () => adj.tick())
 
         return {
             state: state,
