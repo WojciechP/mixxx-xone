@@ -18,6 +18,10 @@ declare var print: (thing: {}) => void
 type DeckGroup = '[Channel1]' | '[Channel2]' | '[Channel3]' | '[Channel4]' | '[PreviewDeck1]'
 type EqGroup = `[EqualizerRack1_${DeckGroup}_Effect1]`
 
+type UpToFour = '1'|'2'|'3'|'4';
+type FXUnitGroup =`[EffectRack${UpToFour}_EffectUnit${UpToFour}]`;
+type FXUnitKey = `group_${DeckGroup}_enable` | `super1`;
+
 
 type GroupControlMap = {
     [ctrl in DeckControlKey]: DeckGroup
@@ -29,7 +33,9 @@ type GroupControlMap = {
         [ctrl in MasterKey]: '[Master]'
     } & {
         [ctrl in EqControlKey]: EqGroup
-    }
+    } & {
+        [ctrl in FXUnitKey]: FXUnitGroup
+    };
 
 
 interface MIDI {

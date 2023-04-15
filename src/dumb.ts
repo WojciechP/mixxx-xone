@@ -503,7 +503,7 @@ var K24D: { [k: string]: {} } = {};
                     const beatsAfterStart = this.next.getPosBeats() - sync.nextSyncBeats
                     xfade01 = beatsAfterStart / sync.transitionHalfperiodBeats / 2 + 0.5
                 }
-                if (xfade01 > 1) {
+                if (xfade01 > 1 || !this.prev.getValue('play')) {
                     xfade01 = 1 // safety huh
                 }
                 if (xfade01 <= 0.5) {
@@ -543,7 +543,7 @@ var K24D: { [k: string]: {} } = {};
             }
             private automixTick() {
                 print(`audomix tick: ${this.phase}`)
-                this.numTicks = (this.numTicks + 1) % 24
+                this.numTicks = (this.numTicks + 1) % 12
                 if (!this.prev.getValue('track_loaded') && !this.next.getValue('track_loaded')) {
                     this.disableAutomix()
                 }
@@ -780,11 +780,24 @@ var K24D: { [k: string]: {} } = {};
             const lastEqCol = midimap.columns[3]
             layer.rotary({
                 midi: lastEqCol[1],
-                onTurn: () => { },
+                onTurn: (val) => {
+                    print(`super1: ${val/127}`);
+                    engine.setValue('[EffectRack1_EffectUnit1]', 'super1', val/127);
+                },
                 onDown: () => adj.toggle(),
                 color: () => Color.OFF, // ADJ sets color manually
             })
             adj.setColor = (c: Color) => show_color(lastEqCol[1].push, c)
+
+            layer.rotary({
+                midi: lastEqCol[2],
+                onTurn: (val) => {
+                    print(`super2: ${val/127}`);
+                    engine.setValue('[EffectRack1_EffectUnit2]', 'super1', val/127);
+                },
+                onDown: () => {},
+                color: () => Color.OFF, 
+            })
 
             layer.rotary({
                 midi: lastEqCol[3],
@@ -927,7 +940,7 @@ var K24D: { [k: string]: {} } = {};
         // reloop | loop here | nudge left | nudge right
         // tempo0 |   sync    | jump left  | jump right
         //   hc1  |   hc2     |    hc3     |     hc4
-        //   cue  |   play    |
+        //   cue  |   play    |    FX1     |     FX2
 
         layerDeck.button({
             note: midimap.letters.a,
@@ -1022,16 +1035,37 @@ var K24D: { [k: string]: {} } = {};
             color: v => v ? Color.RED : Color.OFF,
             connKey: 'play_indicator',
         })
-        layerDeck.button({
-            note: midimap.letters.o,
-            onDown: () => { },
-            color: () => Color.OFF,
-        })
-        layerDeck.button({
-            note: midimap.letters.p,
-            onDown: () => { },
-            color: () => Color.OFF,
-        })
+
+
+        const mkFXButton = (group: FXUnitGroup, note: Note) => {
+            let isOn = 0;
+            layerDeck.button({
+                note: note,
+                onDown: () => { 
+                  const fxKey = `group_${state.deck.group}_enable` as const;
+                  const v = engine.getValue(group, fxKey);
+                  engine.setValue(group, fxKey, v ? 0 : 1);
+                },
+                color: () => isOn ? Color.GREEN : Color.OFF,
+                timer: true,
+            })
+
+            const mkConn = (dg: DeckGroup) => {
+              const fxKey = `group_${dg}_enable` as const;
+                layerDeck.conn(group, fxKey, (v, g, k) => {
+                      const fxKey = `group_${state.deck.group}_enable` as const;
+                      if (k == fxKey) {
+                        isOn = v;
+                      }
+                });
+            };
+            mkConn('[Channel1]');
+            mkConn('[Channel2]');
+            mkConn('[Channel3]');
+        };
+        mkFXButton('[EffectRack1_EffectUnit1]', midimap.letters.o);
+        mkFXButton('[EffectRack1_EffectUnit2]', midimap.letters.p);
+
 
         engine.beginTimer(200, () => {
             state.parity = state.parity ? 0 : 1
@@ -1039,7 +1073,7 @@ var K24D: { [k: string]: {} } = {};
             layerOverview.tickers.forEach(t => t())
             layerDeck.tickers.forEach(t => t())
         })
-        engine.beginTimer(100, () => adj.tick())
+        engine.beginTimer(50, () => adj.tick())
 
         return {
             state: state,
