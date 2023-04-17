@@ -177,7 +177,7 @@ var K24D: { [k: string]: {} } = {};
         }
         const chanOffset = 14
         const decks: DeckGroup[] = [
-            '[Channel3]', '[Channel1]', '[Channel2]'
+            '[Channel1]', '[Channel2]'
         ]
 
         class Layer {
@@ -715,15 +715,76 @@ var K24D: { [k: string]: {} } = {};
 
         function mapSharedSection(layer: Layer) {
 
+                //    Echo      |  Hi  |  Hi  |    Echo
+                //   2-Filter   |  Mid |  Mid |   2-Filter
+                //  Reverb/ADJ  |  Low |  Low |  Reverb/overview
+            function mapDeckFX(fxUnit: UpToFour, midiCol: A4<Pot & {push: Note}>) {
+                const fxGroup1 = `[EffectRack1_EffectUnit${fxUnit}_Effect1]` as const;
+                const fxGroup2 = `[EffectRack1_EffectUnit${fxUnit}_Effect2]` as const;
+                const fxGroup3 = `[EffectRack1_EffectUnit${fxUnit}_Effect3]` as const;
+                layer.rotary({
+                    midi: midiCol[1],
+                    onTurn: (val) => {
+                        engine.setValue(fxGroup1, 'meta', val/127);
+                    },
+                    onDown: () => { 
+                        engine.setValue(fxGroup1, 'meta', 0)
+                        engine.softTakeoverIgnoreNextValue(fxGroup1, 'meta')
+                    },
+                    color: () => Color.OFF,
+                })
+                engine.softTakeover(fxGroup1, 'meta', true)
+
+                layer.rotary({
+                    midi: midiCol[2],
+                    onTurn: (val) => {
+                        engine.setValue(fxGroup2, 'meta', val/127);
+                    },
+                    onDown: () => { 
+                        engine.setValue(fxGroup2, 'meta', 0.5)
+                        engine.softTakeoverIgnoreNextValue(fxGroup2, 'meta')
+                    },
+                    color: () => Color.OFF, 
+                })
+                engine.softTakeover(fxGroup2, 'meta', true)
+
+                layer.rotary({
+                    midi: midiCol[3],
+                    onTurn: (val) => {
+                        engine.setValue(fxGroup3, 'meta', val/127);
+                    },
+                    onDown: () => {
+                        if (fxUnit == '1') {
+                            adj.toggle()
+                        } else {
+                            layerOverview.activate()
+                        }
+                    },
+                    color: () => (fxUnit == '1' ? Color.OFF : Color.AMBER), // ADJ sets color manually
+                })
+                engine.softTakeover(fxGroup3, 'meta', true)
+                if (fxUnit == '1') {
+                  adj.setColor = (c: Color) => show_color(midiCol[3].push, c)
+                } 
+            }
+            mapDeckFX('1', midimap.columns[0])
+            mapDeckFX('2', midimap.columns[3])
+
             decks.forEach((group, i) => {
+                i = i+1 // skip first column
                 const column = midimap.columns[i]
                 const d = new Deck(group)
                 engine.softTakeover(d.group, 'volume', true)
 
+                const quickFXGroup = `[QuickEffectRack1_${d.group}]` as const;
                 layer.rotary({
                     midi: column[0],
-                    onTurn: () => { }, // HPF/LPF TODO
-                    onDown: () => { },
+                    onTurn: (offset) => { 
+                        const prev = engine.getValue(quickFXGroup, 'super1');
+                        const next = prev + (offset > 10 ? -0.02 : 0.02);
+                        engine.setValue(quickFXGroup, 'super1', next);
+                    }, 
+                    onDown: () => { engine.setValue(quickFXGroup, 'super1', 0); },
                     color: () => Color.OFF,
                 })
 
@@ -777,36 +838,7 @@ var K24D: { [k: string]: {} } = {};
                     onTurn: val => d.setValue('volume', val / 127)
                 })
             })
-            const lastEqCol = midimap.columns[3]
-            layer.rotary({
-                midi: lastEqCol[1],
-                onTurn: (val) => {
-                    print(`super1: ${val/127}`);
-                    engine.setValue('[EffectRack1_EffectUnit1]', 'super1', val/127);
-                },
-                onDown: () => adj.toggle(),
-                color: () => Color.OFF, // ADJ sets color manually
-            })
-            adj.setColor = (c: Color) => show_color(lastEqCol[1].push, c)
 
-            layer.rotary({
-                midi: lastEqCol[2],
-                onTurn: (val) => {
-                    print(`super2: ${val/127}`);
-                    engine.setValue('[EffectRack1_EffectUnit2]', 'super1', val/127);
-                },
-                onDown: () => {},
-                color: () => Color.OFF, 
-            })
-
-            layer.rotary({
-                midi: lastEqCol[3],
-                onTurn: () => { },
-                onDown: () => {
-                    layerOverview.activate()
-                },
-                color: () => state.layer === 'overview' ? Color.AMBER : Color.OFF,
-            })
 
             layer.rotary({
                 midi: midimap.leftEnc,
@@ -854,13 +886,23 @@ var K24D: { [k: string]: {} } = {};
 
         const adj = new AutoMixer()
 
-        mapSharedSection(layerOverview)
+        mapSharedSection(layerOverview);
         // reloop || headphone gain flip
         // tempo0 || global sync lock
         // ?      || ?
         // load   || AutoDJ bottom
 
+        // First column remains unused:
+        ([midimap.letters.a, midimap.letters.e, midimap.letters.i, midimap.letters.m]).forEach((letter: Note) => {
+            layerOverview.button({
+                note: letter,
+                onDown: () => {},
+                color: () => Color.OFF,
+            })
+        });
+
         decks.forEach((group, idx) => {
+            idx = idx+1; // skip the first column
             const firstBtn = midimap.letters[firstRow[idx]]
             const d = new Deck(group)
             layerOverview.button({
@@ -901,8 +943,7 @@ var K24D: { [k: string]: {} } = {};
             color: () => Color.OFF,
         })
         const isGLobalLock = () => {
-            return engine.getValue(decks[0], 'sync_mode') && engine.getValue(decks[1], 'sync_mode') &&
-                engine.getValue(decks[2], 'sync_mode')
+            return engine.getValue(decks[0], 'sync_mode') && engine.getValue(decks[1], 'sync_mode');
         }
         layerOverview.button({
             note: midimap.letters.h,
@@ -1061,7 +1102,6 @@ var K24D: { [k: string]: {} } = {};
             };
             mkConn('[Channel1]');
             mkConn('[Channel2]');
-            mkConn('[Channel3]');
         };
         mkFXButton('[EffectRack1_EffectUnit1]', midimap.letters.o);
         mkFXButton('[EffectRack1_EffectUnit2]', midimap.letters.p);

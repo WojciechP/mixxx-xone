@@ -19,8 +19,10 @@ type DeckGroup = '[Channel1]' | '[Channel2]' | '[Channel3]' | '[Channel4]' | '[P
 type EqGroup = `[EqualizerRack1_${DeckGroup}_Effect1]`
 
 type UpToFour = '1'|'2'|'3'|'4';
-type FXUnitGroup =`[EffectRack${UpToFour}_EffectUnit${UpToFour}]`;
-type FXUnitKey = `group_${DeckGroup}_enable` | `super1`;
+type FXUnitGroup =`[EffectRack1_EffectUnit${UpToFour}]` |
+    `[EffectRack1_EffectUnit${UpToFour}_Effect${UpToFour}]` |
+    `[QuickEffectRack1_${DeckGroup}]`;
+type FXUnitKey = `group_${DeckGroup}_enable` | `super1` | `meta`;
 
 
 type GroupControlMap = {
