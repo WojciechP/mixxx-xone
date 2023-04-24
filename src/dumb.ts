@@ -1000,16 +1000,41 @@ var K24D: { [k: string]: {} } = {};
         })
 
 
-        // DECK LAYER
+        // DECK LAYER (LOOP)
         mapSharedSection(layerDeck)
-        // reloop | loop here | nudge left | nudge right
-        // tempo0 |   sync    | jump left  | jump right
-        //   hc1  |   hc2     |    hc3     |     hc4
-        //   cue  |   play    |    FX1     |     FX2
-        //   
+        // L halve |  L dbl  | bj halve | bj dbl
+        // L enabl | L here  |  roll L  | roll R
+        // hotcues...
 
         layerDeck.button({
             note: midimap.letters.a,
+            onDown: () => downup(state.deck, 'loop_halve'),
+            color: () => Color.OFF,
+        })
+        layerDeck.button({
+            note: midimap.letters.b,
+            onDown: () => downup(state.deck, 'loop_double'),
+            color: v => Color.OFF,
+        })
+        layerDeck.button({
+            note: midimap.letters.c,
+            onDown: () => {
+                const old = state.deck.getValue('beatjump_size')
+                if (old > 1) {
+                    state.deck.setValue('beatjump_size', old/2)
+                }
+            },
+            color: () => Color.OFF,
+        })
+        layerDeck.button({
+            note: midimap.letters.d,
+            onDown: () => {
+                state.deck.setValue('beatjump_size', state.deck.getValue('beatjump_size')*2)
+            },
+            color: () => Color.OFF,
+        })
+        layerDeck.button({
+            note: midimap.letters.e,
             onDown: () => {
                 reloop(state.deck)
             },
@@ -1017,54 +1042,36 @@ var K24D: { [k: string]: {} } = {};
             color: v => v ? Color.GREEN : Color.OFF,
         })
         layerDeck.button({
-            note: midimap.letters.b,
+            note: midimap.letters.f,
             onDown: () => downup(state.deck, 'beatloop_activate'), // TODO check
             color: v => Color.GREEN,
         })
-        layerDeck.init(() => show_color(midimap.letters.b, Color.GREEN))
-        layerDeck.button({
-            note: midimap.letters.c,
-            onDown: () => state.deck.setValue('rate_temp_down', 1),
-            onUp: () => state.deck.setValue('rate_temp_down', 0),
-            color: () => Color.AMBER,
-        })
-        layerDeck.button({
-            note: midimap.letters.d,
-            onDown: () => state.deck.setValue('rate_temp_up', 1),
-            onUp: () => state.deck.setValue('rate_temp_up', 0),
-            color: () => Color.AMBER,
-        })
+        layerDeck.init(() => show_color(midimap.letters.f, Color.GREEN))
 
         layerDeck.button({
-            note: midimap.letters.e,
-            onDown: () => rateZeroer.zeroDeck(state.deck),
-            timer: true,
-            color: () => (rateZeroer.ledON && rateZeroer.deck.group === state.currentGroup) ? Color.AMBER : Color.OFF,
-        })
-        layerDeck.button({
-            note: midimap.letters.f,
-            onDown: () => {
-                downup(state.deck, 'beatsync')
-                // TODO: safe?
-            },
-            color: () => Color.OFF,
-        })
-        layerDeck.button({
             note: midimap.letters.g,
-            onDown: () => downup(state.deck, 'beatjump_backward'),
+            onDown: () => {
+                const size = state.deck.getValue('beatjump_size')
+                state.deck.setValue('loop_move', -size)
+            },
             color: () => Color.RED,
             // TODO: Safe?
         })
         layerDeck.button({
             note: midimap.letters.h,
-            onDown: () => downup(state.deck, 'beatjump_forward'),
+            onDown: () => {
+                const size = state.deck.getValue('beatjump_size')
+                state.deck.setValue('loop_move', size)
+            },
             color: () => Color.RED,
         })
 
-
-        thirdRow.forEach((l, idx) => {
+        
+        const hcs = [...thirdRow, ...fourthRow] as const;
+        hcs.forEach((l, idx) => {
             const hc = `hotcue_${idx + 1}_position` as DeckControlKey
             const ac = `hotcue_${idx + 1}_activate` as DeckControlKey
+            const enabled = `hotcue_${idx + 1}_enabled` as DeckControlKey
             layerDeck.button({
                 note: midimap.letters[l],
                 onDown: () => {
@@ -1072,43 +1079,20 @@ var K24D: { [k: string]: {} } = {};
                     if (pos < 0) {
                         return
                     }
-                    if (state.deck.getValue('play')) {
-                        moveLoopTo(state.deck, pos)
-                    } else {
-                        state.deck.setValue(ac, 1)
-                    }
+                    moveLoopTo(state.deck, pos)
                 },
                 onUp: () => state.deck.setValue(ac, 0),
-                connKey: 'play',
-                color: (v) => {
-                    if (state.deck.getValue(hc) < 0) {
-                        return Color.OFF
-                    }
-                    return v ? Color.GREEN : Color.AMBER
-                },
+                connKey: enabled,
+                color: (v) => v ? Color.GREEN : Color.OFF,
             })
-        })
-
-        layerDeck.button({
-            note: midimap.letters.m,
-            onDown: () => state.deck.setValue('cue_gotoandplay', 1),
-            onUp: () => state.deck.setValue('cue_gotoandplay', 0),
-            color: () => Color.AMBER,
-        })
-        layerDeck.button({
-            note: midimap.letters.n,
-            onDown: () => state.deck.toggle('play'),
-            color: v => v ? Color.RED : Color.OFF,
-            connKey: 'play_indicator',
         })
 
 
         // DECK SHIFT LAYER
         mapSharedSection(layerDeckShift)
         // loop half | loop double | jumpsize half | jumpsize double
-        // tempo0    |   sync      | jump left     | jump right
-        //   hc1     |   hc2       |    hc3        |     hc4
-        //   cue  |   play    |    FX1     |     FX2
+        // nudge L   | nudge R     | jump left     | jump right
+        // hotcues...
 
         layerDeckShift.button({
             note: midimap.letters.a,
@@ -1138,20 +1122,20 @@ var K24D: { [k: string]: {} } = {};
             color: () => Color.OFF,
         })
 
+
         layerDeckShift.button({
             note: midimap.letters.e,
-            onDown: () => rateZeroer.zeroDeck(state.deck),
-            timer: true,
-            color: () => (rateZeroer.ledON && rateZeroer.deck.group === state.currentGroup) ? Color.AMBER : Color.OFF,
+            onDown: () => state.deck.setValue('rate_temp_down', 1),
+            onUp: () => state.deck.setValue('rate_temp_down', 0),
+            color: () => Color.AMBER,
         })
         layerDeckShift.button({
             note: midimap.letters.f,
-            onDown: () => {
-                downup(state.deck, 'beatsync')
-                // TODO: safe?
-            },
-            color: () => Color.OFF,
+            onDown: () => state.deck.setValue('rate_temp_up', 1),
+            onUp: () => state.deck.setValue('rate_temp_up', 0),
+            color: () => Color.AMBER,
         })
+
         layerDeckShift.button({
             note: midimap.letters.g,
             onDown: () => downup(state.deck, 'beatjump_backward'),
@@ -1164,9 +1148,10 @@ var K24D: { [k: string]: {} } = {};
         })
 
 
-        thirdRow.forEach((l, idx) => {
+        hcs.forEach((l, idx) => {
             const hc = `hotcue_${idx + 1}_position` as DeckControlKey
             const ac = `hotcue_${idx + 1}_activate` as DeckControlKey
+            const enabled = `hotcue_${idx + 1}_enabled` as DeckControlKey
             layerDeckShift.button({
                 note: midimap.letters[l],
                 onDown: () => {
@@ -1177,56 +1162,12 @@ var K24D: { [k: string]: {} } = {};
                     state.deck.setValue(ac, 1)
                 },
                 onUp: () => state.deck.setValue(ac, 0),
-                color: () => {
-                    if (state.deck.getValue(hc) < 0) {
-                        return Color.OFF
-                    }
-                    return Color.AMBER
-                },
+                connKey: enabled,
+                color: v => v ? Color.AMBER : Color.OFF,
             })
         })
 
-        layerDeckShift.button({
-            note: midimap.letters.m,
-            onDown: () => state.deck.setValue('cue_gotoandplay', 1),
-            onUp: () => state.deck.setValue('cue_gotoandplay', 0),
-            color: () => Color.AMBER,
-        })
-        layerDeckShift.button({
-            note: midimap.letters.n,
-            onDown: () => state.deck.toggle('play'),
-            color: v => v ? Color.RED : Color.OFF,
-            connKey: 'play_indicator',
-        })
 
-
-        const mkFXButton = (group: FXUnitGroup, note: Note) => {
-            let isOn = 0;
-            layerDeckShift.button({
-                note: note,
-                onDown: () => { 
-                  const fxKey = `group_${state.deck.group}_enable` as const;
-                  const v = engine.getValue(group, fxKey);
-                  engine.setValue(group, fxKey, v ? 0 : 1);
-                },
-                color: () => isOn ? Color.GREEN : Color.OFF,
-                timer: true,
-            })
-
-            const mkConn = (dg: DeckGroup) => {
-              const fxKey = `group_${dg}_enable` as const;
-                layerDeckShift.conn(group, fxKey, (v, g, k) => {
-                      const fxKey = `group_${state.deck.group}_enable` as const;
-                      if (k == fxKey) {
-                        isOn = v;
-                      }
-                });
-            };
-            mkConn('[Channel1]');
-            mkConn('[Channel2]');
-        };
-        mkFXButton('[EffectRack1_EffectUnit1]', midimap.letters.o);
-        mkFXButton('[EffectRack1_EffectUnit2]', midimap.letters.p);
 
 
 
